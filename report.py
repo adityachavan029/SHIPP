@@ -4,15 +4,11 @@ from reportlab.lib import colors
 from reportlab.lib.units import cm
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import (
-    SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable
+    SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable, Image
 )
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
-from reportlab.platypus.flowables import Flowable
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.pdfbase import pdfmetrics
 import encoding as enc
 
-# ── Colour palette ────────────────────────────────────────────────────────────
 RED   = colors.HexColor("#C0392B")
 BLUE  = colors.HexColor("#1A5276")
 GREEN = colors.HexColor("#1E8449")
@@ -21,17 +17,14 @@ GREY  = colors.HexColor("#F2F3F4")
 MID   = colors.HexColor("#D5D8DC")
 WHITE = colors.white
 BLACK = colors.black
+CELL_RED  = colors.HexColor("#FADBD8")
+CELL_BLUE = colors.HexColor("#D6EAF8")
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+PAGE_W, PAGE_H = A4
+USABLE_W = PAGE_W - 3.6 * cm
+
+
 def _seg_xml(code, type_id):
-    """
-    Colour-encode the binary code string (x-y-type-angle) for a Paragraph.
-    Segments separated by '-'.  Colour scheme:
-        x     → BLUE
-        y     → GREEN
-        type  → RED
-        angle → DARK
-    """
     segs = code.split("-")
     pal  = [BLUE, GREEN, RED, DARK]
     parts = []
@@ -42,10 +35,6 @@ def _seg_xml(code, type_id):
 
 
 def _bitstream_xml(bs, table_rows):
-    """
-    Rebuild the bitstream with colour-coded segments matching the table rows.
-    Each minutia's bits alternate colours: BLUE / RED (matching the reference).
-    """
     palette = [BLUE, RED, GREEN, DARK]
     parts   = []
     idx     = 0
@@ -58,168 +47,248 @@ def _bitstream_xml(bs, table_rows):
     return "".join(parts)
 
 
-# ── Main generator ────────────────────────────────────────────────────────────
-def generate_pdf(stats, image_path, output_path="output_images/fingerprint_report.pdf"):
+def _load_image(path, max_w, max_h):
+    if not os.path.exists(path):
+        return None
+    img = Image(path)
+    iw, ih = img.imageWidth, img.imageHeight
+    scale  = min(max_w / iw, max_h / ih)
+    img.drawWidth  = iw * scale
+    img.drawHeight = ih * scale
+    return img
+
+
+def _pipeline_grid(image_path, styles):
+    """
+    Returns a Table that lays out 4 pipeline images in a 2×2 grid
+    with directional arrows, matching the reference screenshot.
+    """
+    IMG_W = USABLE_W / 2 - 1.2 * cm
+    IMG_H = 5.5 * cm
+
+    orig   = _load_image(image_path,                           IMG_W, IMG_H)
+    binary = _load_image("output_images/step1_binary.png",     IMG_W, IMG_H)
+    skel   = _load_image("output_images/step2_skeleton.png",   IMG_W, IMG_H)
+    annot  = _load_image("output_images/annotated_skeleton.png", IMG_W, IMG_H)
+
+    cap = ParagraphStyle("cap", parent=styles["Normal"],
+                         fontSize=8, alignment=TA_CENTER,
+                         textColor=colors.HexColor("#555555"), spaceBefore=3)
+    arr = ParagraphStyle("arr", parent=styles["Normal"],
+                         fontSize=22, alignment=TA_CENTER,
+                         textColor=BLUE, leading=IMG_H + 22)
+
+    # Row 1 : Original  →  Binary
+    # Row 2 : Minutiae  ←  Thinned
+    row1 = [
+        [orig   or Paragraph("(original)",      cap), Paragraph("⇒", arr), binary or Paragraph("(binary)", cap)],
+        [Paragraph("Original Image",             cap), Paragraph("",  arr), Paragraph("Binary Image",              cap)],
+    ]
+    row2 = [
+        [annot  or Paragraph("(annotated)",      cap), Paragraph("⇐", arr), skel   or Paragraph("(skeleton)", cap)],
+        [Paragraph("Minutiae Points",            cap), Paragraph("",  arr), Paragraph("Thinned Image",             cap)],
+    ]
+
+    def _make(rows):
+        t = Table(rows, colWidths=[IMG_W, 1.2*cm, IMG_W])
+        t.setStyle(TableStyle([
+            ("ALIGN",       (0,0), (-1,-1), "CENTER"),
+            ("VALIGN",      (0,0), (-1,-1), "MIDDLE"),
+            ("TOPPADDING",  (0,0), (-1,-1), 2),
+            ("BOTTOMPADDING",(0,0),(-1,-1), 2),
+        ]))
+        return t
+
+    outer = Table([[_make(row1)], [Spacer(1, 10)], [_make(row2)]])
+    outer.setStyle(TableStyle([
+        ("ALIGN",  (0,0), (-1,-1), "CENTER"),
+        ("VALIGN", (0,0), (-1,-1), "TOP"),
+    ]))
+    return outer
+
+
+def _overview_table(rows, styles):
+    """
+    Produces the overview table:
+    No. | x | y | Type# | Type Name | Type Color | Angle (rad) | Angle (deg)
+    """
+    hdr = ParagraphStyle("HDR2", parent=styles["Normal"],
+                         fontSize=8, fontName="Helvetica-Bold",
+                         alignment=TA_CENTER, textColor=WHITE, leading=11)
+    cel = ParagraphStyle("CEL2", parent=styles["Normal"],
+                         fontSize=8, alignment=TA_CENTER, leading=11)
+    col = ParagraphStyle("COL2", parent=styles["Normal"],
+                         fontSize=8, alignment=TA_CENTER, leading=11,
+                         fontName="Helvetica-Bold")
+
+    header_row = [
+        Paragraph("No.",               hdr),
+        Paragraph("x",                 hdr),
+        Paragraph("y",                 hdr),
+        Paragraph("Minutiae\ntype\nnumber", hdr),
+        Paragraph("Minutiae\ntype name",   hdr),
+        Paragraph("Minutiae\ntype color",  hdr),
+        Paragraph("Angle in\nradian",  hdr),
+        Paragraph("Angle in\ndegree",  hdr),
+    ]
+    data = [header_row]
+
+    for row in rows:
+        is_ending = row["type_num"] == 1
+        color_name = "Red"   if is_ending else "Blue"
+        color_obj  = RED     if is_ending else BLUE
+        data.append([
+            Paragraph(str(row["no"]),                        cel),
+            Paragraph(str(row["x"]),                         cel),
+            Paragraph(str(row["y"]),                         cel),
+            Paragraph(str(row["type_num"]),                  cel),
+            Paragraph(row["type_name"],                      cel),
+            Paragraph(f'<font color="{color_obj.hexval()}"><b>{color_name}</b></font>', col),
+            Paragraph(f'{row["angle_rad"]:.6f}',             cel),
+            Paragraph(str(row["angle_deg"]),                 cel),
+        ])
+
+    col_w = [1.0*cm, 1.2*cm, 1.2*cm, 1.8*cm, 2.4*cm, 2.2*cm, 2.6*cm, 2.0*cm]
+    tbl = Table(data, colWidths=col_w, repeatRows=1)
+
+    row_bg = []
+    for i, row in enumerate(rows):
+        bg = CELL_RED if row["type_num"] == 1 else CELL_BLUE
+        row_bg.append(("BACKGROUND", (0, i+1), (-1, i+1), bg))
+
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND",    (0,0), (-1,0),  DARK),
+        ("TEXTCOLOR",     (0,0), (-1,0),  WHITE),
+        ("FONTNAME",      (0,0), (-1,0),  "Helvetica-Bold"),
+        ("ALIGN",         (0,0), (-1,-1), "CENTER"),
+        ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
+        ("GRID",          (0,0), (-1,-1), 0.4, MID),
+        ("LINEBELOW",     (0,0), (-1,0),  1.2, DARK),
+        ("TOPPADDING",    (0,0), (-1,-1), 4),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 4),
+        ("LEFTPADDING",   (0,0), (-1,-1), 3),
+        ("RIGHTPADDING",  (0,0), (-1,-1), 3),
+        *row_bg,
+    ]))
+    return tbl
+
+
+def _encoding_table(rows, styles):
+    """Original binary encoding table."""
+    hdr = ParagraphStyle("HDR3", parent=styles["Normal"],
+                         fontSize=8, fontName="Helvetica-Bold",
+                         alignment=TA_CENTER, textColor=WHITE, leading=11)
+    cel = ParagraphStyle("CEL3", parent=styles["Normal"],
+                         fontSize=8, alignment=TA_CENTER, leading=11)
+    bin_s = ParagraphStyle("BIN3", parent=styles["Normal"],
+                           fontSize=7.5, alignment=TA_CENTER, leading=11)
+
+    header_row = [
+        Paragraph("No.",          hdr),
+        Paragraph("x",            hdr),
+        Paragraph("y",            hdr),
+        Paragraph("Type\nnumber", hdr),
+        Paragraph("Angle\n(deg)", hdr),
+        Paragraph("Binary Code",  hdr),
+        Paragraph("bits",         hdr),
+    ]
+    data = [header_row]
+    for row in rows:
+        data.append([
+            Paragraph(str(row["no"]),                        cel),
+            Paragraph(str(row["x"]),                         cel),
+            Paragraph(str(row["y"]),                         cel),
+            Paragraph(str(row["type_num"]),                  cel),
+            Paragraph(str(row["angle_deg"]),                 cel),
+            Paragraph(_seg_xml(row["binary_code"], row["type_num"]), bin_s),
+            Paragraph(str(row["bit_count"]),                 cel),
+        ])
+
+    col_w = [1.0*cm, 1.4*cm, 1.4*cm, 1.8*cm, 1.6*cm, 8.2*cm, 1.2*cm]
+    tbl = Table(data, colWidths=col_w, repeatRows=1)
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND",    (0,0), (-1,0),  DARK),
+        ("TEXTCOLOR",     (0,0), (-1,0),  WHITE),
+        ("FONTNAME",      (0,0), (-1,0),  "Helvetica-Bold"),
+        ("ALIGN",         (0,0), (-1,-1), "CENTER"),
+        ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
+        ("ROWBACKGROUNDS",(0,1), (-1,-1), [WHITE, GREY]),
+        ("GRID",          (0,0), (-1,-1), 0.4, MID),
+        ("LINEBELOW",     (0,0), (-1,0),  1.2, DARK),
+        ("TOPPADDING",    (0,0), (-1,-1), 4),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 4),
+        ("LEFTPADDING",   (0,0), (-1,-1), 3),
+        ("RIGHTPADDING",  (0,0), (-1,-1), 3),
+    ]))
+    return tbl
+
+
+def generate_pdf(stats, image_path,
+                 output_path="output_images/fingerprint_report.pdf"):
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     doc = SimpleDocTemplate(
-        output_path,
-        pagesize=A4,
+        output_path, pagesize=A4,
         leftMargin=1.8*cm, rightMargin=1.8*cm,
         topMargin=2*cm,    bottomMargin=2*cm,
     )
+    styles  = getSampleStyleSheet()
+    story   = []
+    rows    = stats["table_rows"]
+    bs      = stats["bitstream"]
 
-    W, H   = A4
-    styles = getSampleStyleSheet()
-    story  = []
+    title_s = ParagraphStyle("T", parent=styles["Heading1"],
+                              fontSize=16, textColor=DARK, spaceAfter=4,
+                              alignment=TA_CENTER, fontName="Helvetica-Bold")
+    sub_s   = ParagraphStyle("S", parent=styles["Normal"],
+                              fontSize=9, textColor=colors.HexColor("#717D7E"),
+                              alignment=TA_CENTER, spaceAfter=12)
+    sec_s   = ParagraphStyle("SEC", parent=styles["Normal"],
+                              fontSize=10, fontName="Helvetica-Bold",
+                              textColor=DARK, spaceBefore=4, spaceAfter=6)
+    bs_s    = ParagraphStyle("BS", parent=styles["Normal"],
+                              fontSize=8, leading=13, wordWrap="CJK",
+                              alignment=TA_JUSTIFY)
+    stat_s  = ParagraphStyle("ST", parent=styles["Normal"],
+                              fontSize=10, leading=18, textColor=DARK)
 
-    # ── Title ─────────────────────────────────────────────────────────────────
-    title_style = ParagraphStyle(
-        "ReportTitle",
-        parent=styles["Heading1"],
-        fontSize=16,
-        textColor=DARK,
-        spaceAfter=4,
-        spaceBefore=0,
-        alignment=TA_CENTER,
-        fontName="Helvetica-Bold",
-    )
-    sub_style = ParagraphStyle(
-        "SubTitle",
-        parent=styles["Normal"],
-        fontSize=9,
-        textColor=colors.HexColor("#717D7E"),
-        alignment=TA_CENTER,
-        spaceAfter=14,
-    )
-    story.append(Paragraph("Fingerprint Minutiae Extraction Report", title_style))
+    # ── Title ────────────────────────────────────────────────────────
+    story.append(Paragraph("Fingerprint Minutiae Extraction Report", title_s))
     story.append(Paragraph(
         f"Input image: <b>{image_path}</b> &nbsp;|&nbsp; "
-        f"Total minutiae: <b>{len(stats['table_rows'])}</b>",
-        sub_style
-    ))
+        f"Total minutiae: <b>{len(rows)}</b>",
+        sub_s))
     story.append(HRFlowable(width="100%", thickness=1, color=MID, spaceAfter=10))
 
-    # ── Minutiae Table ────────────────────────────────────────────────────────
-    cell_style = ParagraphStyle(
-        "CellCenter",
-        parent=styles["Normal"],
-        fontSize=8,
-        alignment=TA_CENTER,
-        leading=11,
-    )
-    hdr_style = ParagraphStyle(
-        "HDR",
-        parent=styles["Normal"],
-        fontSize=8,
-        fontName="Helvetica-Bold",
-        alignment=TA_CENTER,
-        textColor=WHITE,
-        leading=11,
-    )
-    bin_style = ParagraphStyle(
-        "BinCode",
-        parent=styles["Normal"],
-        fontSize=7.5,
-        alignment=TA_CENTER,
-        leading=11,
-    )
+    # ── Section 1: Pipeline Image Grid ───────────────────────────────
+    story.append(Paragraph("Pipeline Stages", sec_s))
+    story.append(_pipeline_grid(image_path, styles))
+    story.append(Spacer(1, 16))
+    story.append(HRFlowable(width="100%", thickness=0.5, color=MID, spaceAfter=10))
 
-    headers = [
-        Paragraph("No.",                  hdr_style),
-        Paragraph("x",                    hdr_style),
-        Paragraph("y",                    hdr_style),
-        Paragraph("Minutiae\ntype\nnumber",hdr_style),
-        Paragraph("Angle\nin\ndegree",    hdr_style),
-        Paragraph("Binary",               hdr_style),
-        Paragraph("bits",                 hdr_style),
-    ]
-    table_data = [headers]
+    # ── Section 2: Minutiae Overview Table ───────────────────────────
+    story.append(Paragraph("Minutiae Overview", sec_s))
+    story.append(_overview_table(rows, styles))
+    story.append(Spacer(1, 16))
+    story.append(HRFlowable(width="100%", thickness=0.5, color=MID, spaceAfter=10))
 
-    for row in stats["table_rows"]:
-        xml_code = _seg_xml(row["binary_code"], row["type_num"])
-        table_data.append([
-            Paragraph(str(row["no"]),          cell_style),
-            Paragraph(str(row["x"]),           cell_style),
-            Paragraph(str(row["y"]),           cell_style),
-            Paragraph(str(row["type_num"]),    cell_style),
-            Paragraph(str(row["angle_deg"]),   cell_style),
-            Paragraph(xml_code,                bin_style),
-            Paragraph(str(row["bit_count"]),   cell_style),
-        ])
+    # ── Section 3: Binary Encoding Table ─────────────────────────────
+    story.append(Paragraph("Binary Encoding Table", sec_s))
+    story.append(_encoding_table(rows, styles))
+    story.append(Spacer(1, 16))
+    story.append(HRFlowable(width="100%", thickness=0.5, color=MID, spaceAfter=10))
 
-    # Column widths: No | x | y | type | angle | binary | bits
-    col_widths = [1.0*cm, 1.4*cm, 1.4*cm, 1.8*cm, 1.6*cm, 8.2*cm, 1.2*cm]
-
-    tbl = Table(table_data, colWidths=col_widths, repeatRows=1)
-    tbl.setStyle(TableStyle([
-        # Header row
-        ("BACKGROUND",   (0,0), (-1,0),  DARK),
-        ("TEXTCOLOR",    (0,0), (-1,0),  WHITE),
-        ("FONTNAME",     (0,0), (-1,0),  "Helvetica-Bold"),
-        ("FONTSIZE",     (0,0), (-1,0),  8),
-        ("ALIGN",        (0,0), (-1,0),  "CENTER"),
-        ("VALIGN",       (0,0), (-1,0),  "MIDDLE"),
-        ("ROWBACKGROUND",(0,0), (-1,0),  DARK),
-        # Data rows alternating background
-        ("ROWBACKGROUNDS",(0,1),(-1,-1), [WHITE, GREY]),
-        ("ALIGN",        (0,1), (-1,-1), "CENTER"),
-        ("VALIGN",       (0,1), (-1,-1), "MIDDLE"),
-        ("FONTSIZE",     (0,1), (-1,-1), 8),
-        # Grid
-        ("GRID",         (0,0), (-1,-1), 0.4, MID),
-        ("LINEBELOW",    (0,0), (-1,0),  1.2, DARK),
-        # Padding
-        ("TOPPADDING",   (0,0), (-1,-1), 4),
-        ("BOTTOMPADDING",(0,0), (-1,-1), 4),
-        ("LEFTPADDING",  (0,0), (-1,-1), 3),
-        ("RIGHTPADDING", (0,0), (-1,-1), 3),
-    ]))
-    story.append(tbl)
-    story.append(Spacer(1, 18))
-
-    # ── Final Bitstream Section ───────────────────────────────────────────────
-    section_hdr = ParagraphStyle(
-        "SecHdr",
-        parent=styles["Normal"],
-        fontSize=10,
-        fontName="Helvetica-Bold",
-        textColor=DARK,
-        spaceBefore=4,
-        spaceAfter=6,
-    )
-    bs_style = ParagraphStyle(
-        "BitstreamPara",
-        parent=styles["Normal"],
-        fontSize=8,
-        leading=13,
-        wordWrap="CJK",
-        alignment=TA_JUSTIFY,
-    )
-    stats_style = ParagraphStyle(
-        "Stats",
-        parent=styles["Normal"],
-        fontSize=10,
-        leading=18,
-        textColor=DARK,
-    )
-
-    story.append(HRFlowable(width="100%", thickness=0.5, color=MID, spaceAfter=8))
-    story.append(Paragraph("Final Bitstream", section_hdr))
-
-    bs_xml = _bitstream_xml(stats["bitstream"], stats["table_rows"])
-    story.append(Paragraph(bs_xml, bs_style))
+    # ── Section 4: Final Bitstream ────────────────────────────────────
+    story.append(Paragraph("Final Bitstream", sec_s))
+    story.append(Paragraph(_bitstream_xml(bs, rows), bs_s))
     story.append(Spacer(1, 14))
-
     story.append(HRFlowable(width="100%", thickness=0.5, color=MID, spaceAfter=8))
-    story.append(Paragraph("Statistics", section_hdr))
 
-    story.append(Paragraph(
-        f'Total bits = <b>{stats["total_bits"]}</b>', stats_style))
-    story.append(Paragraph(
-        f'#0s = <b>{stats["count_0s"]}</b>', stats_style))
-    story.append(Paragraph(
-        f'#1s = <b>{stats["count_1s"]}</b>', stats_style))
+    # ── Section 5: Statistics ─────────────────────────────────────────
+    story.append(Paragraph("Statistics", sec_s))
+    story.append(Paragraph(f'Total bits = <b>{stats["total_bits"]}</b>', stat_s))
+    story.append(Paragraph(f'#0s = <b>{stats["count_0s"]}</b>',         stat_s))
+    story.append(Paragraph(f'#1s = <b>{stats["count_1s"]}</b>',         stat_s))
 
     doc.build(story)
     print(f"[+] PDF report saved → {output_path}")
