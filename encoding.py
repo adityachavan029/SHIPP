@@ -1,4 +1,9 @@
-MAX_MINUTIAE = 14
+# SAFETY_CAP is NOT a template-size limit.
+# It is a last-resort guard against runaway false-positives on pathologically
+# noisy / corrupt images. Real minutiae-count variation is determined entirely
+# by the upstream quality filters (border mask, distance pruning, bifurcation
+# confirmation). Lower this only if a specific noisy image is causing problems.
+SAFETY_CAP = 50
 BITS_X      = 9
 BITS_Y      = 9
 BITS_TYPE   = 1
@@ -25,7 +30,7 @@ def sort_minutiae_row_major(oriented_minutiae):
     return sorted(oriented_minutiae, key=lambda m: (m['y'], m['x']))
 
 def generate_final_bitstream(sorted_minutiae):
-    capped     = sorted_minutiae[:MAX_MINUTIAE]
+    capped     = sorted_minutiae[:SAFETY_CAP]
     table_rows = []
     bitstream_parts = []
     for i, m in enumerate(capped):
