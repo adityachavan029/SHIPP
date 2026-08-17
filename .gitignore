@@ -20,3 +20,6 @@ output_images/
 # OS
 .DS_Store
 Thumbs.db
+
+# Dilithium keys (never commit private keys)
+keys/
