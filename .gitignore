@@ -23,3 +23,6 @@ Thumbs.db
 
 # Dilithium keys (never commit private keys)
 keys/
+
+# Generated signatures (runtime output)
+signatures/
