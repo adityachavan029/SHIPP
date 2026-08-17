@@ -99,7 +99,7 @@ def run_pipeline(image_path):
         dy = int(12 * np.sin(rad))
         cv2.line(vis, (x, y), (x + dx, y - dy), color, 1)
     cv2.imwrite('output_images/annotated_skeleton.png', vis)
-    print('[+] Visual overlay saved as output_images/annotated_skeleton.png (Red: Ending, Blue: Bifurcation)')
+    print('[+] Visual overlay saved as output_images/annotated_skeleton.png (Blue: Ending, Red: Confirmed Bifurcation)')
     print('=' * 80)
     print('[*] Pipeline completed successfully!')
     print('=' * 80)

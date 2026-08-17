@@ -121,23 +121,23 @@ def compute_minutiae_orientations(minutiae_list, skeleton_img, window_size=9, ma
             angles.append((theta, path))
         final_angle_rad = 0.0
         if tid == 1:
-            if len(angles) > 0:
-                final_angle_rad = angles[0][0]
+            if len(angles) == 0:
+                continue
+            final_angle_rad = angles[0][0]
         elif tid == 3:
-            if len(angles) == 3:
-                theta1, theta2, theta3 = (angles[0][0], angles[1][0], angles[2][0])
-                diff_12 = compute_angle_difference(theta1, theta2)
-                diff_23 = compute_angle_difference(theta2, theta3)
-                diff_31 = compute_angle_difference(theta3, theta1)
-                min_diff = min(diff_12, diff_23, diff_31)
-                if min_diff == diff_12:
-                    final_angle_rad = theta3
-                elif min_diff == diff_23:
-                    final_angle_rad = theta1
-                else:
-                    final_angle_rad = theta2
-            elif len(angles) > 0:
-                final_angle_rad = angles[0][0]
+            if len(angles) != 3:
+                continue
+            theta1, theta2, theta3 = (angles[0][0], angles[1][0], angles[2][0])
+            diff_12 = compute_angle_difference(theta1, theta2)
+            diff_23 = compute_angle_difference(theta2, theta3)
+            diff_31 = compute_angle_difference(theta3, theta1)
+            min_diff = min(diff_12, diff_23, diff_31)
+            if min_diff == diff_12:
+                final_angle_rad = theta3
+            elif min_diff == diff_23:
+                final_angle_rad = theta1
+            else:
+                final_angle_rad = theta2
         final_angle_deg = int(round(final_angle_rad * 180.0 / np.pi)) % 360
         oriented_minutiae.append({'y': r, 'x': c, 'type_id': tid, 'type_name': name, 'angle_rad': final_angle_rad, 'angle_deg': final_angle_deg})
     return oriented_minutiae
