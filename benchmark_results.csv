@@ -1,0 +1,5 @@
+image,minutiae,endings,bifurcations,bitstream_bits,extract_ms,pub_key_B,priv_key_B,keygen_ms,keys_existed,payload_B,sig_B,sign_ms,padding_bits,verify_valid,verify_ms,tamper_rejected,tamper_ms,sig_bits,convert_ms,bc_rt_pass,orig_rtl_lines,wm_rtl_lines,embed_ms,extract_ms_rtl,rtl_rt_pass,total_ms
+1.jpg,26,19,7,728,829.19,1952,4032,1.4,True,91,3309,7.45,0,True,0.73,True,0.27,26472,1.71,True,34,451,2.13,37.94,True,880.81
+3.jpg,37,28,9,1036,945.85,1952,4032,0.55,True,130,3309,1.01,4,True,0.39,True,0.3,26472,1.59,True,34,451,0.86,33.04,True,983.6
+38457.png,50,17,33,1400,5807.91,1952,4032,0.55,True,175,3309,1.47,0,True,0.37,True,0.25,26472,1.68,True,34,451,2.0,47.75,True,5861.98
+image.png,17,17,0,476,483.33,1952,4032,0.62,True,60,3309,0.84,4,True,0.45,True,0.26,26472,1.48,True,34,451,0.73,31.47,True,519.18
